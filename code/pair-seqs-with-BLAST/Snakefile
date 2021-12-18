@@ -1,752 +1,264 @@
-import io
 import os
-from os import listdir
-from os.path import isfile, join
-import sys
-import pandas as pd
+import pandas as pd 
 import numpy as np
-import random
-import pathlib
-import math
 from Bio import SeqIO
-from Bio.Seq import Seq
 
-RFAMS = ["RF01960","RF00177"]
-silvapluspr2="../../mlp-out-12May/databases/combineddb.fasta"
-config={"input": "/vortexfs1/omics/alexander/akrinos/2021-mendota-18S/refseq-DIAMOND",
-        "output": ["2021-12-17_eukaryota",
-                   "2021-12-17_bacteria"],
-        "rfam": {"RF01960": "https://rfam.xfam.org/family/RF01960/cm",
-                 "RF00177": "https://rfam.xfam.org/family/RF00177/cm"},
-        "selected_seq_file": {"RF01960":"fasta_for_tree_filt_sep_types.fasta",
-                              "RF00177":"fasta_for_tree_filt_sep_types.fasta"},
-        "selected_seq_fold": {"RF01960":"/vortexfs1/omics/alexander/akrinos/2021-mendota-18S/refseq-DIAMOND/seqs_for_tree_all_euks",
-                              "RF00177":"/vortexfs1/omics/alexander/akrinos/2021-mendota-18S/refseq-DIAMOND/seqs_for_tree_all_bact"}}
+input_dir = "../redo-blast-search-sep-types" #"."
+blast_res_out = "blast_out"
 
-     
-SAMPLE_FOLDER_SEQIDS = "../../meta-lakes/meta-lakes-pipeline/data/all_metadata_12May.csv"
-
-RAW_TO_ASSEMBLY = pd.read_csv(SAMPLE_FOLDER_SEQIDS)
-RAW_FILES = RAW_TO_ASSEMBLY.Raw
-ASSEMBLY_FILES = RAW_TO_ASSEMBLY.Assembly
-ALIASES = RAW_TO_ASSEMBLY.SeqProjID
-SPLIT_NO = 97
 length_dict = dict({"RF00177":750,"RF01960":1000})
-rrna_dict = dict({"RF00177":"16S","RF01960":"18S"})
-
-
-def process_chunk(sequence_targets, only_seqs = True, domain_filter = "Eukaryota",
-                  silva_tax = None, silva_tax_explain_dict = None):
-    chunk = pd.DataFrame({"Sequence_IDs": sequence_targets,\
-                          "split_sseq_id": [str(curr).split(".")[0].split("_")[0] for curr in sequence_targets]})
-    chunk = pd.merge(chunk, silva_tax, left_on = "split_sseq_id", right_on = "primaryAccession", how = "left")
-    to_save = pd.DataFrame({"MatchedSeqID": chunk["Sequence_IDs"],
-                        "Domain": [""] * len(chunk["split_sseq_id"]),
-                        "Kingdom": [""] * len(chunk["split_sseq_id"]),
-                        "Supergroup": [""] * len(chunk["split_sseq_id"]),
-                        "Clade": [""] * len(chunk["split_sseq_id"]),
-                        "Phylum": [""] * len(chunk["split_sseq_id"]),
-                        "Class": [""] * len(chunk["split_sseq_id"]),
-                        "Order": [""] * len(chunk["split_sseq_id"]),
-                        "Family": [""] * len(chunk["split_sseq_id"]),
-                        "Genus": [""] * len(chunk["split_sseq_id"]),
-                        "Species": [""] * len(chunk["split_sseq_id"]),
-                        "Database": ["XX"] * len(chunk["split_sseq_id"])})
-    list_cols = ["Domain","Phylum","Class","Order",\
-                         "Family","Genus","Species"]
-    pr2_cols = ["Domain","Kingdom","Phylum","Class","Order",\
-                         "Family","Genus","Species"]
-    all_levels = ['subkingdom', 'phylum', 'infraclass', 'superphylum', 'genus', 'subclass', 
-                'superclass', 'order', 'suborder', 'major_clade', 'superfamily', 'superkingdom', 'family', 
-                'domain', 'kingdom', 'infraphylum', 'subphylum', 'class', 'superorder', 'subfamily']
-    list_cols_euks = [lev.capitalize() for lev in all_levels]
-    to_save[list_cols_euks] = ""
-    to_save[all_levels] = ""
-
-    chunk["Species"] = ""
-    for curr in range(len(chunk.index)):
-        silva_lab = chunk.split_sseq_id[curr]
-        
-        if (silva_lab not in silva_dict_path) & (silva_lab not in pr2_tax_explain_dict):
-            to_save.loc[to_save.index == curr, "Database"] = "Remove"
-            continue
-        
-        if (silva_lab in pr2_tax_explain_dict) & ("tax" in chunk.Sequence_IDs[curr]):
-            domain_str = str(pr2_tax_explain_dict[silva_lab]).split(";")[0]
-        else:
-            domain_str = str(chunk.path[curr]).split(";")[0]
-
-        if domain_str == "Bacteria":
-            curr_split = str(chunk.path[curr]).split(";", 6)
-            to_save.loc[to_save.index == curr, list_cols[0:len(curr_split)]]= curr_split
-        else:
-            if (silva_lab in pr2_tax_explain_dict):
-                curr_split = str(pr2_tax_explain_dict[silva_lab]).split(";")
-                to_save.loc[to_save.index == curr, pr2_cols] = curr_split
-                to_save.loc[to_save.index == curr, "Database"] = "PR2"
-                if chunk.path[curr] in silva_tax_explain_dict:
-                    if str(curr_split[2]) not in chunk.path[curr]:
-                        to_save.loc[to_save.index == curr, "Database"] = "Remove"
-            else:
-                #f chunk.path[curr] in silva_tax_explain_dict:
-                # Eukaryotes have a much more complicated taxonomy in SILVA
-                curr_split = str(chunk.path[curr]).split(";")
-
-                major_clade = ""
-                for curr_ind in range(len(curr_split)):
-                    curr_substring = ";".join(curr_split[0:curr_ind]) + ";"
-                    if curr_substring in silva_tax_explain_dict:
-                        silva_level = silva_tax_explain_dict[curr_substring].capitalize()
-                        if silva_level == "Major_clade":
-                            major_clade = curr_split[curr_ind-1]
-                        to_save.loc[to_save.index == curr, silva_level] = curr_split[curr_ind-1]
-                to_save.loc[to_save.index == curr, "Database"] = "SILVA"
-                if major_clade != "Opisthokonta":
-                    to_save.loc[to_save.index == curr, "Database"] = "Remove"
-                
-                to_save.loc[to_save.index == curr,"Kingdom"] = to_save.loc[to_save.index == curr,"Major_clade"]
-                to_save.loc[to_save.index == curr,"Phylum"] = to_save.loc[to_save.index == curr,"Kingdom"]
-                to_save.loc[to_save.index == curr,"Class"] = to_save.loc[to_save.index == curr,"Phylum"]
-                to_save.loc[to_save.index == curr,"Order"] = to_save.loc[to_save.index == curr,"Class"]
-                to_save.loc[to_save.index == curr,"Family"] = to_save.loc[to_save.index == curr,"Order"]
-    
-    to_save = to_save.loc[to_save.Database != "Remove",:]
-    
-    if domain_filter == "Eukaryota":
-        to_save = to_save.loc[to_save.Domain == "Eukaryota",:]
-        
-        # select a few representative sequences from the phylum list
-        to_save.drop_duplicates(keep=False,inplace=True)
-        set_orders = list(set(to_save.Order))
-        number_candidates = list(range(0,2))
-        chosen_seqs = []
-        for order in set_orders:
-            candidates = list(to_save.loc[to_save.Order == order,"MatchedSeqID"])
-            chosen_seqs.extend([random.choice(candidates) for curr in number_candidates])
-    else:
-        to_save = to_save.loc[to_save.Domain == "Bacteria",:]
-        
-        
-        # select a few representative sequences from the order list
-        to_save.drop_duplicates(keep=False,inplace=True)
-        set_orders = list(set(to_save.Order))
-        number_candidates = list(range(0,2))
-        chosen_seqs = []
-        for order in set_orders:
-            candidates = list(to_save.loc[to_save.Order == order,"MatchedSeqID"])
-            chosen_seqs.extend([random.choice(candidates) for curr in number_candidates])
-        
-    return(chosen_seqs)
-
-
-def get_silva(download_files=False):
-    if download_files:
-        os.system("wget -O Silva_tax.txt.gz " +
-              "https://www.arb-silva.de/fileadmin/silva_databases/current/Exports/taxonomy/taxmap_slv_ssu_ref_138.1.txt.gz")
-        os.system("rm Silva_tax.txt")
-        os.system("gunzip Silva_tax.txt.gz")
-        os.system("wget -O Silva_tax_full.txt.gz " +
-              "https://www.arb-silva.de/fileadmin/silva_databases/current/Exports/taxonomy/tax_slv_ssu_138.1.txt.gz")
-        os.system("rm Silva_tax_full.txt")
-        os.system("gunzip Silva_tax_full.txt.gz")
-
-        os.system("wget -O PR2_tax.txt.gz " + \
-          "https://github.com/pr2database/pr2database/releases/download/v4.12.0/pr2_version_4.12.0_merged.tsv.gz")
-        os.system("gunzip PR2_tax.txt.gz")
-    silva_tax = pd.read_csv("Silva_tax.txt", sep = "\t")
-    silva_tax_explain = pd.read_csv("Silva_tax_full.txt", sep = "\t", header=None)
-    silva_tax_explain.columns = ["path","taxid","taxlevel","-","version"]
-    silva_tax_explain_dict = dict(zip(silva_tax_explain.path, silva_tax_explain.taxlevel))
-    pr2_tax = pd.read_csv("PR2_tax.txt", sep = "\t")
-    pr2_tax = pr2_tax[((pr2_tax.gene == "18S_rRNA") & (pr2_tax.kingdom == "Eukaryota")) | \
-                      ((pr2_tax.gene == "16S_rRNA") & (pr2_tax.kingdom == "Bacteria"))]
-    pr2_tax_explain_dict = dict(zip(pr2_tax.genbank_accession,
-                                    pr2_tax[["kingdom","supergroup","division",\
-                                             "class","order","family","genus","species"]].\
-                                    astype("str").agg(';'.join, axis=1)))
-    
-    return silva_tax, silva_tax_explain_dict, pr2_tax_explain_dict
-    
-if not os.path.isfile("Silva_tax.txt"):
-    silva_tax, silva_tax_explain_dict, pr2_tax_explain_dict = get_silva(download_files=True)
-else:
-    silva_tax, silva_tax_explain_dict, pr2_tax_explain_dict = get_silva(download_files=False)
-    
-silva_dict_path = dict(zip(silva_tax.primaryAccession,silva_tax.path))
-silva_dict_org = dict(zip(silva_tax.primaryAccession,silva_tax.organism_name))
-
-#
-# @param input_cmfile The cmsearch output file for each of the samples
-#                     This file should only be eukaryotic or bacterial.
-# @param input_fasta The original fasta file the sequences came from
-def extract_seqs(input_cmfile,input_fasta):
-    if "RF00177" in str(input_cmfile):
-        domain = "Bacteria"
-    else:
-        domain = "Eukaryota"
-    read_cm = pd.read_csv(input_cmfile, comment="#", \
-                          sep = "\s+", header=None)
-    read_cm.columns = ["target name","-","accession query name",\
-                       "accession mdl","model","mdl from","mdl to",\
-                       "seq from","seq to","strand","trunc","pass",\
-                       "gc","bias","score", "E-value","inc",\
-                       "description of target"]
-                       
-    # Save contigs that have significant matches to covariance model
-    target_seqs = [str(curr) for curr in read_cm["target name"]]
-
-    # Select contig sequences from FASTA file that match list of target sequences
-    wanted = (rec for rec in SeqIO.parse(input_fasta, "fasta") if rec.id in target_seqs)
-
-    # Initialize storage for output FASTA
-    seq_output = []
-
-    for want in wanted:
-        cm_info = read_cm[read_cm["target name"] == want.id]
-        if (len(cm_info.index) > 1):
-            cm_info = cm_info.iloc[0,:]
-        delimit_1 = int(cm_info["seq from"]) # the end of the sequence
-        delimit_2 = int(cm_info["seq to"]) # the beginning of the sequence
-        if str(list(read_cm.loc[read_cm["target name"] == want.id,"strand"])[0]) == "+":
-            seq_to_add = Seq("".join(list(want.seq)[delimit_1:delimit_2]))
-            if len(seq_to_add) > 0:
-                seq_output.append(SeqIO.SeqRecord(seq_to_add, 
-                                                  str(want.id), 
-                                                  "", ""))
-        else:
-            seq_to_add = Seq("".join(list(want.seq)[delimit_2:delimit_1])).reverse_complement()
-            if len(seq_to_add) > 0:
-                seq_output.append(SeqIO.SeqRecord(seq_to_add,
-                                                  str(want.id),
-                                                  "", ""))
-            else:
-                print(delimit_2,"and delimit 1",delimit_1)
-                                              
-    return seq_output
 
 rule all:
     input:
-        iq_tree = expand(os.path.join("{output_fold}", "iqtree_select",\
-                         "total_tree_{rfam}.treefile"), output_fold = config["output"], rfam=["RF01960","RF00177"])
+        blast_out = expand(os.path.join(input_dir, "blast_out", "{model}",
+                            "blast_formatted.out"),model=["16S","18S"]),
+        blast_out_fmt = expand(os.path.join(input_dir, "blast_top_1", "{model}",
+                            "blast_formatted_reduced.cols.out"),model=["16S","18S"]),
+        blast_out_16 = os.path.join(input_dir, "selected_fasta", "16S",
+                            "16S_seq_list.txt"),
+        blast_out_18 = os.path.join(input_dir, "selected_fasta", "18S",
+                            "18S_seq_list.txt"),
+        fasta_16 = os.path.join(input_dir, "selected_fasta", "16S", "selected_seqs.fasta"),
+        fasta_18 = os.path.join(input_dir, "selected_fasta", "18S", "selected_seqs.fasta"),
+        ncbi_output = expand(os.path.join(input_dir, "taxonomy_blast_hits", "{model}_tax.out"),model=["16S","18S"]),
+        blast_w_tax = expand(os.path.join(input_dir, "blast_w_tax", "{model}",
+                                "blast_formatted_reduced.cols.out"),model=["16S","18S"])
 
-rule download_rfam:
+rule extract_model:
+    input:
+        infile = os.path.join("all_sequences.fasta")
     output:
-        os.path.join("{output_fold}", "databases", "rfam", "{rfam_cm}.cm")
+        outfile = os.path.join("all_sequences_{model}.fasta")
     params:
-        rfam_url = lambda wildcards: config["rfam"][wildcards.rfam_cm]
-    shell:
-        '''
-        wget -O {output} {params.rfam_url}
-        '''
-   
-rule run_cmalign_select:
-    input:
-        cm_fasta_split = lambda wc: os.path.join("{output_fold}",
-                                    config["selected_seq_fold"][wc.rfam],
-                                    config["selected_seq_file"][wc.rfam]),
-        rfams = os.path.join("{output_fold}", "databases",
-                             "rfam", "{rfam}.cm")
-    output:
-        cm_sto = os.path.join("{output_fold}", "cmalign_{rfam}_select",
-                              "total.clustered.cmalign.withoutgroup.sto")
-    conda:
-        "tree-env.yaml"
-    log:
-        err = os.path.join("{output_fold}","logs","cmalign_{rfam}","total.err"),
-        out = os.path.join("{output_fold}","logs","cmalign_{rfam}","total.out")
-    shell:
-        '''
-        cmalign --matchonly --mxsize 80000 --dna -o {output.cm_sto} {input.rfams} {input.cm_fasta_split} 1> {log.out} 2> {log.err}
-        '''
-
-rule seqmagick_select:
-    input:
-        cm_sto_total = os.path.join("{output_fold}", "cmalign_{rfam}_select",\
-                        "total.clustered.cmalign.withoutgroup.sto")
-    output:
-        cm_fasta_total = os.path.join("{output_fold}", "cmalign_{rfam}_select",\
-                        "total.clustered.cmalign.withoutgroup.fasta")
-    log:
-        err = os.path.join("{output_fold}","logs","convert_{rfam}","total.mogrify.err")
-    conda:
-        "tree-env.yaml"
-    shell:
-        '''
-        seqmagick convert {input.cm_sto_total} {output.cm_fasta_total}
-        seqmagick mogrify --deduplicate-sequences {output.cm_fasta_total} 2> {log.err}
-        '''
-
-rule convert_to_phy_select:
-    input:
-        cm_fast = os.path.join("{output_fold}", "cmalign_{rfam}_select",\
-                         "total.cmalign.fasta")
-    output:
-        cm_phy = os.path.join("{output_fold}", "cmalign_{rfam}_select", \
-                        "total.cmalign.phy")
-    conda:
-        "tree-env.yaml"
-    log:
-        err = os.path.join("{output_fold}","logs",\
-                     "convert_{rfam}","reference.convert.err")
-    shell:
-        '''
-        seqmagick convert {input.cm_fast} {output.cm_phy} 2> {log.err}
-        '''
-        
-rule build_iqtree_select:
-    input:
-        cm_fast = os.path.join("{output_fold}", "cmalign_{rfam}_select",\
-                         "total.clustered.cmalign.withoutgroup.fasta")
-    output:
-        iq_tree = os.path.join("{output_fold}","iqtree_select","total_tree_{rfam}.treefile")
-    conda:
-        "tree-env.yaml"
-    log:
-        err = os.path.join("{output_fold}","logs",\
-                    "iqtree","total.{rfam}.iqtree.err")
-    params:
-        prefix = os.path.join("{output_fold}","iqtree_select","total_tree_{rfam}")
-    shell:
-        '''
-        iqtree -s {input.cm_fast} --prefix {params.prefix} 2> {log.err}
-        '''
-
-rule run_vsearch:
-    input:
-        fasta_db = silvapluspr2
-    output:
-        sorted = os.path.join("{output_fold}","sorted","reference.sorted.fasta"),
-        centroids = os.path.join("{output_fold}","clustered","reference.clustered.fasta"),
-        clusters = os.path.join("{output_fold}","clustered","reference.clusters")
-    log:
-        err = os.path.join("{output_fold}","logs","vsearch","reference.err"),
-        out = os.path.join("{output_fold}","logs","vsearch","reference.out")
-    conda:
-        "tree-env.yaml"
-    shell:
-        '''
-        vsearch --sortbylength {input.fasta_db} --output {output.sorted} --minseqlength 1000 --notrunclabels 1>> {log.out} 2>> {log.err}
-        # cluster at order level
-        vsearch --cluster_smallmem {output.sorted} -id 0.85 --centroids {output.centroids} --uc {output.clusters} --notrunclabels 1>> {log.out} 2>> {log.err}
-        '''
-        
-rule run_vsearch_shuffle:
-    input:
-        centroids = os.path.join("{output_fold}","clustered","reference.clustered.fasta")
-    output:
-        centroids_shuffled = os.path.join("{output_fold}","clustered","reference.clustered.shuffled.fasta")
-    log:
-        err = os.path.join("{output_fold}","logs","vsearch","reference_shuf.err"),
-        out = os.path.join("{output_fold}","logs","vsearch","reference_shuf.out")
-    conda:
-        "tree-env.yaml"
-    shell:
-        '''
-        vsearch --shuffle {input.centroids} --output {output.centroids_shuffled} --randseed 13 --fasta_width 0 1>> {log.out} 2>> {log.err}
-        '''
-        
-rule cmsearch_reference:
-    input:
-        cm_in = os.path.join("{output_fold}","clustered","reference.clustered.fasta"),
-        rfams = os.path.join("{output_fold}", "databases", "rfam", "{rfam}.cm")
-    output:
-        cm_out = os.path.join("{output_fold}", "cmsearch_{rfam}", "reference.cmsearch.out"),
-        cm_tblout = os.path.join("{output_fold}", "cmsearch_{rfam}", "reference.cmsearch.tblout")
-    params:
-        extra = ""
-    log:
-        err = os.path.join("{output_fold}","logs","cmsearch_{rfam}","reference.err"),
-        out = os.path.join("{output_fold}","logs","cmsearch_{rfam}","reference.out"),
-    conda:
-        "tree-env.yaml"
-    shell:
-        '''
-        cmsearch --cpu 4 -o {output.cm_out} --tblout {output.cm_tblout} {input.rfams} {input.cm_in} 2> {log.err} 1> {log.out}
-        '''
-
-rule extract_cm_fasta:
-    input:
-        cm_in = os.path.join("{output_fold}","clustered","reference.clustered.fasta"),
-        cm_tblout = os.path.join("{output_fold}", "cmsearch_{rfam}", "reference.cmsearch.tblout")
-    output:
-        cm_fasta = os.path.join("{output_fold}", "cmsearch_{rfam}", "reference.cmsearch.fasta")
-    params:
-        extra = ""
-    log:
-        err = os.path.join("{output_fold}","logs","cmsearch_{rfam}","reference.err"),
-        out = os.path.join("{output_fold}","logs","cmsearch_{rfam}","reference.out")
+        model = "{model}"
     run:
-        cm_tbl = input.cm_tblout
-        cm_fasta = output.cm_fasta
-        read_cm = pd.read_csv(cm_tbl, comment="#", sep = "\s+", header=None,\
-                              error_bad_lines=False, warn_bad_lines=False,names=list(range(0,24)))
-        read_cm.fillna("",inplace=True)
-        copyover_cm = read_cm.iloc[:,0:17]
-        copyover_cm.columns = ["target name","-","accession query name","accession mdl","model","mdl from","mdl to",\
-                               "seq from","seq to","strand","trunc","pass","gc","bias","score",
-                               "E-value","inc"]
-        copyover_cm["description of target"] = read_cm.loc[:,17:].astype(str).agg(' '.join, axis=1)
-        sequence_targets = list(copyover_cm["target name"])
-        # now we need to select a few representative sequences from a taxonomic group of interest
-        if "RF01960" in cm_tbl:
-            sequence_targets = process_chunk(sequence_targets, 
-                                             domain_filter = "Eukaryota",
-                                             silva_tax = silva_tax, 
-                                             silva_tax_explain_dict = silva_tax_explain_dict)
+        if params.model == "16S":
+            token_check = "bacteria"
         else:
-            sequence_targets = process_chunk(sequence_targets, 
-                                             domain_filter = "Bacteria",
-                                             silva_tax = silva_tax,
-                                             silva_tax_explain_dict = silva_tax_explain_dict)
-        seqiter = SeqIO.parse(open(input.cm_in), 'fasta')                                    
-        SeqIO.write((seq for seq in seqiter if seq.id in sequence_targets), cm_fasta, "fasta")
-            
-# filter clustered fasta file to obtain the relevant bacterial or eukaryotic sequences (go around cmsearch step.)
-rule extract_proper_seqs:
-    input:
-        cm_in = os.path.join("{output_fold}","clustered","reference.clustered.shuffled.fasta")
-    output:
-        cm_fasta = os.path.join("{output_fold}", "cmsearch_{rfam}", "reference.selected.fasta")
-    params:
-        extra = ""
-    run:
-        clustered_iter = SeqIO.parse(open(input.cm_in), 'fasta')
-        sequence_targets_all = [seq.id for seq in clustered_iter]
-        for cm_fasta in output.cm_fasta:
-            # now we need to select a few representative sequences from a taxonomic group of interest
-            if "RF01960" in cm_fasta:
-                sequence_targets = process_chunk(sequence_targets_all, only_seqs = True, domain_filter = "Eukaryota", \
-                                                 silva_tax = silva_tax, silva_tax_explain_dict = silva_tax_explain_dict)
-            else:
-                sequence_targets = process_chunk(sequence_targets_all, only_seqs = True, domain_filter = "Bacteria", \
-                                                 silva_tax = silva_tax, silva_tax_explain_dict = silva_tax_explain_dict)
-            seqiter = SeqIO.parse(open(input.cm_in), 'fasta')                                    
-            SeqIO.write((seq for seq in seqiter if seq.id in sequence_targets), cm_fasta, "fasta")
-            
-# split larger output file into 4 files
-rule seqio_splitfiles:
-    input:
-        cm_fasta = os.path.join("{output_fold}", "cmsearch_{rfam}", "reference.selected.fasta")
-    output:
-        cm_fasta_split = expand(os.path.join("{output_fold}", "cmsearch_{rfam}",
-                                "reference.selected.{file_no}.fasta"),
-                                rfam = "{rfam}",
-                                output_fold = "{output_fold}",
-                                file_no = list(range(0,SPLIT_NO)))
-    params:
-        rfam_curr = "{rfam}",
-        list_files = list(range(0,SPLIT_NO))
-    run:
-        curr_rfam = params.rfam_curr
-        counter = 0
-        for curr_fileiter in params.list_files:
-            cm_fasta = os.path.join(config["output"], "cmsearch_" + curr_rfam, "reference.selected.fasta")
-            seqiter = SeqIO.parse(open(cm_fasta), 'fasta')
-            seqs_list = [seq for seq in seqiter]
-            number_seqs = len(seqs_list)
-            seqiter = SeqIO.parse(open(cm_fasta), 'fasta')
-            seq_list_curr = []
-            seq_counter = 0
-            for seq in seqiter:
-                if (curr_fileiter % 2 == 0):
-                    if ((seq_counter - counter) >= math.floor(number_seqs/len(params.list_files))) & \
-                        (curr_fileiter != params.list_files[-1]):
-                        break
-                else:
-                    if ((seq_counter - counter) >= math.ceil(number_seqs/len(params.list_files))) & \
-                        (curr_fileiter != params.list_files[-1]):
-                        break
-                if seq_counter >= counter:
-                    seq_list_curr.append(seq)
-                seq_counter = seq_counter + 1
-            counter = seq_counter
-            cm_fasta_split = os.path.join(config["output"], "cmsearch_" + curr_rfam,\
-                                "reference.selected." + str(curr_fileiter) + ".fasta")
-            #if len(seq_list_curr) > 0:
-            with open(cm_fasta_split, "w") as file_handle:
-                SeqIO.write(seq_list_curr, file_handle, "fasta")
-
-rule run_cmalign:
-    input:
-        cm_fasta_split = os.path.join("{output_fold}", "cmsearch_{rfam}",
-                                      "reference.selected.{file_no}.fasta"),
-        rfams = os.path.join("{output_fold}", "databases",
-                             "rfam", "{rfam}.cm")
-    output:
-        cm_sto = os.path.join("{output_fold}", "cmalign_{rfam}",
-                              "reference.cmalign.{file_no}.sto")
-    conda:
-        "tree-env.yaml"
-    log:
-        err = os.path.join("{output_fold}","logs","cmalign_{rfam}","reference.{file_no}.err"),
-        out = os.path.join("{output_fold}","logs","cmalign_{rfam}","reference.{file_no}.out")
-    shell:
-        '''
-        cmalign --matchonly --mxsize 80000 --dna -o {output.cm_sto} {input.rfams} {input.cm_fasta_split} 1> {log.out} 2> {log.err}
-        '''
+            token_check = "eukary"
+        input_seqs = list(SeqIO.parse(input.infile,"fasta"))
+        all_seqs = []
+        for input_seq in input_seqs:
+            if token_check in input_seq.id:
+                all_seqs.append(input_seq)
+        with open(output.outfile, "w") as output_handle:
+            SeqIO.write(all_seqs, output_handle, "fasta")
 
 rule cluster_extracted:
     input:
-        fasta_files = lambda filename: os.path.join(config["input"], "selected_fasta",
-                                       rrna_dict[filename.rfam], "selected_seqs.fasta")
+        fasta_files = os.path.join("all_sequences_{model}.fasta")
     output:
-        sorted = os.path.join("{output_fold}", "sorted_contigs",\
-                                "all_rfam_{rfam}.selected.fasta"),
-        centroids = os.path.join("{output_fold}","clustered_contigs","{rfam}.clustered.core.fasta"),
-        clusters = os.path.join("{output_fold}","clustered_contigs","{rfam}.clusters")
+        sorted = os.path.join(input_dir, "sorted_contigs", "{model}",
+                            "sorted.fasta"),
+        centroids = os.path.join(input_dir, "clustered_contigs", "{model}",
+                            "clustered.centroids.fasta"),
+        clusters = os.path.join(input_dir, "clustered_contigs", "{model}","clustered.clusters")
     log:
-        err = os.path.join("{output_fold}","logs","vsearch","concat_{rfam}.err"),
-        out = os.path.join("{output_fold}","logs","vsearch","concat_{rfam}.out")
+        err = os.path.join(input_dir,"logs","vsearch","{model}.concat.err"),
+        out = os.path.join(input_dir,"logs","vsearch","{model}.concat.out")
     params:
-        length_use = lambda wcs: length_dict[wcs.rfam]
-    conda:
-        "tree-env.yaml"
+        length_use = 750
     shell:
         '''
         vsearch --sortbylength {input.fasta_files} --output {output.sorted} --minseqlength {params.length_use} --notrunclabels 1>> {log.out} 2>> {log.err}
         vsearch --cluster_fast {output.sorted} -id 0.97 --centroids {output.centroids} --uc {output.clusters} --notrunclabels 1>> {log.out} 2>> {log.err}
         '''
-        
-rule cmalign_prefilter:
-    input:
-        extracted_matches = expand(os.path.join("{output_fold}","clustered_contigs",\
-                                   "reference.{rfam}.clustered.fasta"), rfam = RFAMS, output_fold = "{output_fold}"),
-        clusters = expand(os.path.join("{output_fold}","clustered_contigs",\
-                                "reference.{rfam}.clusters"), rfam = RFAMS, output_fold = "{output_fold}")
-    output:
-        extracted_matches_core = expand(os.path.join("{output_fold}",\
-                                   "clustered_contigs",\
-                                   "reference.{rfam}.clustered.core.fasta"), rfam = RFAMS, output_fold = "{output_fold}")
-    run:
-        cluster_all = pd.DataFrame()
-        for cluster_file in input.clusters:
-            clust_f = pd.read_csv(cluster_file,sep="\t",names=["type","clustnum","seqlen",
-                                                     "percid","plus","a","b",
-                                                     "aln","query","target"])
-            if "RF01960" in cluster_file:
-                clust_f["clustnum"] = [-1*int(curr) for curr in clust_f["clustnum"]]
-            cluster_all = pd.concat([cluster_all,clust_f])
-        cluster_all["Label"] = ["MEND-TF-18S-" + str(abs(curr)) if curr < 0 else \
-                                "MEND-TF-16S-" + str(abs(curr)) for curr in cluster_all.clustnum]
-        all_centroids = list(set(cluster_all.loc[cluster_all["type"] == "S","query"]))
-        target_list = list(cluster_all.target)
-        count_centroids = [target_list.count(curr) for curr in all_centroids]
-        good_centroids = [centroid for centroid,count_c in \
-                          zip(all_centroids,count_centroids) if count_c > 10]
-        for extracted, output_file in \
-            zip(input.extracted_matches,output.extracted_matches_core):
-            seqiter = SeqIO.parse(open(extracted), 'fasta')      
-            SeqIO.write((seq for seq in seqiter if seq.id in good_centroids), 
-                         output_file, "fasta")
-        
-rule cmalign_combo:
-    input:
-        extracted_matches = os.path.join("{output_fold}","clustered_contigs",\
-                                   "{rfam}.clustered.core.fasta"),
-        rfams = os.path.join("{output_fold}", "databases",\
-                                 "rfam", "{rfam}.cm")
-    output:
-        cm_sto = os.path.join("{output_fold}", "cmalign_{rfam}",\
-                              "all_contigs_clustered.cmalign.sto")
-    conda:
-        "tree-env.yaml"
-    log:
-        err = os.path.join("{output_fold}","logs","cmalign_{rfam}","comboalign.err"),
-        out = os.path.join("{output_fold}","logs","cmalign_{rfam}","comboalign.out")
-    shell:
-        '''
-        cmalign --matchonly --mxsize 10000 --dna -o {output.cm_sto} {input.rfams} {input.extracted_matches} 1> {log.err} 2> {log.out}
-        '''
-            
-rule cmalign_rrnas:
-    input:
-        extracted_matches = os.path.join("{output_fold}", "extracted_matches",
-                                         "{file_id}_{rfam}.selected.fasta"),
-        rfams = os.path.join("{output_fold}", "databases",
-                             "rfam", "{rfam}.cm")
-    output:
-        cm_sto = os.path.join("{output_fold}", "cmalign_{rfam}",
-                              "{file_id}.cmalign.sto")
-    conda:
-        "tree-env.yaml"
-    log:
-        err = os.path.join("{output_fold}","logs","cmalign_{rfam}","{file_id}.err"),
-        out = os.path.join("{output_fold}","logs","cmalign_{rfam}","{file_id}.out")
-    shell:
-        '''
-        cmalign --matchonly --mxsize 10000 --dna -o {output.cm_sto} {input.rfams} {input.extracted_matches} 1> {log.out} 2> {log.err}
-        '''
 
-rule concatenate_reference_alignments:
+rule blast_search_16S:
     input:
-        cm_sto_euk = expand(os.path.join("{output_fold}", "cmalign_RF01960",
-                                  "reference.cmalign.{file_id}.sto"), file_id = ALIASES, output_fold = "{output_fold}"),
-        cm_sto_bac = expand(os.path.join("{output_fold}", "cmalign_RF00177",
-                                  "reference.cmalign.{file_id}.sto"), file_id = ALIASES, output_fold = "{output_fold}")
+        db = os.path.join("16S_db","16S_ribosomal_RNA.nos"),
+        query = os.path.join(input_dir, "clustered_contigs","16S",
+                            "clustered.centroids.fasta")
+        #query = os.path.join("../meta-lakes/2021-06-11_treebuilder/clustered_contigs/reference.RF00177.clustered.core.fasta")
+        #query = os.path.join("2021-11-07_treebuilder/clustered_contigs/reference.RF00177.clustered.core.fasta")
+        #RF00177.clustered.core.fasta")
+        #query = os.path.join("all_sequences.fasta")
     output:
-        cm_sto_all_euk = os.path.join("{output_fold}", "cmalign_RF01960",
-                                      "reference.cmalign.sto"),
-        cm_sto_all_bac = os.path.join("{output_fold}", "cmalign_RF00177",
-                                      "reference.cmalign.sto")
-    shell:
-        '''
-        cat {input.cm_sto_bac} > {output.cm_sto_all_bac}
-        cat {input.cm_sto_euk} > {output.cm_sto_all_euk}
-        '''
-        
-rule outgroup_align:
-    input:
-        rfams = os.path.join("{output_fold}", "databases",
-                             "rfam", "{rfam}.cm"),
-        cm_fasta = os.path.join("{output_fold}", "cmsearch_{rfam}",
-                                "reference.selected.10.fasta")
-    output:
-        cm_outgroup = os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "reference.cmalign.outgroup.sto")
-    conda:
-        "tree-env.yaml"
-    log:
-        err = os.path.join("{output_fold}","logs","cmalign_{rfam}","outgroup.err"),
-        out = os.path.join("{output_fold}","logs","cmalign_{rfam}","outgroup.out")
-    shell:
-        '''
-        cmalign --matchonly --mxsize 80000 --dna -o {output.cm_outgroup} {input.rfams} {input.cm_fasta} 1> {log.out} 2> {log.err}
-        '''
-        
-rule concatenate_reference_with_cmsearch_out:
-    input:
-        cm_sto_align_bac = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "reference.cmalign.sto"), rfam = "RF00177", output_fold = "{output_fold}"),
-        cm_sto_align_euk = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "reference.cmalign.sto"), rfam = "RF01960", output_fold = "{output_fold}"),
-        cm_sto_files_bac = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "{file_id}.cmalign.sto"), rfam = "RF00177", file_id = ALIASES, output_fold = "{output_fold}"),
-        cm_sto_files_euk = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "{file_id}.cmalign.sto"), rfam = "RF01960", file_id = ALIASES, output_fold = "{output_fold}")
-    output:
-        cm_sto_total_bac = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "total.cmalign.sto"), rfam = "RF00177", output_fold = "{output_fold}"),
-        cm_sto_total_euk = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "total.cmalign.sto"), rfam = "RF01960", output_fold = "{output_fold}")
-    shell:
-        '''
-        cat {input.cm_sto_align_euk} {input.cm_sto_files_euk} > {output.cm_sto_total_euk}
-        cat {input.cm_sto_align_bac} {input.cm_sto_files_bac} > {output.cm_sto_total_bac}
-        '''
-        
-rule concatenate_reference_with_cmsearch_out_clustered:
-    input:
-        cm_sto_align_bac = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "reference.cmalign.sto"), rfam = "RF00177", output_fold = "{output_fold}"),
-        cm_sto_align_euk = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "reference.cmalign.sto"), rfam = "RF01960", output_fold = "{output_fold}"),
-        cm_sto_align_euk_out = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "reference.cmalign.outgroup.sto"), rfam = "RF01960", output_fold = "{output_fold}"),
-        cm_sto_align_bac_out = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "reference.cmalign.outgroup.sto"), rfam = "RF00177", output_fold = "{output_fold}"),
-        cm_sto_files_bac = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "all_contigs_clustered.cmalign.sto"), rfam = "RF00177", output_fold = "{output_fold}"),
-        cm_sto_files_euk = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "all_contigs_clustered.cmalign.sto"), rfam = "RF01960", output_fold = "{output_fold}")
-    output:
-        cm_sto_total_bac = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "total.clustered.cmalign.withoutgroup.sto"), rfam = "RF00177", output_fold = "{output_fold}"),
-        cm_sto_total_euk = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "total.clustered.cmalign.withoutgroup.sto"), rfam = "RF01960", output_fold = "{output_fold}")
-    shell:
-        '''
-        cat {input.cm_sto_align_euk} {input.cm_sto_files_euk} {input.cm_sto_align_euk_out} > {output.cm_sto_total_euk}
-        cat {input.cm_sto_align_bac} {input.cm_sto_files_bac} {input.cm_sto_align_bac_out}> {output.cm_sto_total_bac}
-        '''        
-
-rule seqmagick:
-    input:
-        cm_sto_total = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "total.clustered.cmalign.withoutgroup.sto"), rfam = RFAMS, output_fold = "{output_fold}")
-    output:
-        cm_fasta_total = expand(os.path.join("{output_fold}", "cmalign_{rfam}",\
-                        "total.clustered.cmalign.withoutgroup.fasta"), rfam = RFAMS, output_fold = "{output_fold}")
-    log:
-        err = expand(os.path.join("{output_fold}","logs","convert_{rfam}","total.mogrify.err"), rfam = RFAMS, 
-                        output_fold = "{output_fold}")
-    conda:
-        "tree-env.yaml"
-    shell:
-        '''
-        seqmagick convert {input.cm_sto_total} {output.cm_fasta_total}
-        seqmagick mogrify --deduplicate-sequences {output.cm_fasta_total} 2> {log.err}
-        '''
-
-rule convert_to_phy:
-    input:
-        cm_fast = os.path.join("{output_fold}", "cmalign_{rfam}",\
-                         "total.cmalign.fasta")
-    output:
-        cm_phy = os.path.join("{output_fold}", "cmalign_{rfam}", \
-                        "total.cmalign.phy")
-    conda:
-        "tree-env.yaml"
-    log:
-        err = os.path.join("{output_fold}","logs",\
-                     "convert_{rfam}","reference.convert.err")
-    shell:
-        '''
-        seqmagick convert {input.cm_fast} {output.cm_phy} 2> {log.err}
-        '''
-        
-rule build_iqtree:
-    input:
-        cm_fast = os.path.join("{output_fold}", "cmalign_{rfam}",\
-                         "total.clustered.cmalign.withoutgroup.fasta")
-    output:
-        iq_tree = os.path.join("{output_fold}","iqtree_core_outgroup","total_tree_{rfam}.treefile")
-    conda:
-        "tree-env.yaml"
-    log:
-        err = os.path.join("{output_fold}","logs",\
-                    "iqtree","total.{rfam}.iqtree.err")
+        os.path.join(input_dir, "blast_out", "16S",
+                            "blast_formatted.out")
     params:
-        prefix = os.path.join("{output_fold}","iqtree_core_outgroup","total_tree_{rfam}")
+        db = os.path.join("16S_db","16S_ribosomal_RNA")
     shell:
         '''
-        iqtree -s {input.cm_fast} --prefix {params.prefix} 2> {log.err}
-        '''
-
-rule build_phyml:
-    input:
-        cm_phy = expand(os.path.join("{output_fold}", "cmalign_{rfam}", \
-                        "reference.cmalign.phy"), rfam = RFAMS, output_fold ="{output_fold}")
-    output:
-        tree_stats = expand(os.path.join("{output_fold}", "cmalign_{rfam}", \
-                            "reference.cmalign_phyml_stats.txt"), rfam = RFAMS, output_fold = "{output_fold}"),
-        tree_file = expand(os.path.join("{output_fold}", "cmalign_{rfam}", \
-                           "reference.cmalign_phyml_tree.txt"), rfam = RFAMS, output_fold = "{output_fold}")
-    conda:
-        "tree-env.yaml"
-    shell:
-        '''
-        module load parallel
-        parallel --link --jobs 2 "phyml -i {{1}}"" ::: {input.cm_phy}
+        blastn -db {params.db} -out {output} -query {input.query} -outfmt 6 -num_threads 8 -evalue 10e-4
         '''
         
-rule taxtastic:
+rule blast_search_18S:
     input:
-        cm_fast = expand(os.path.join("{output_fold}", "cmalign_{rfam}", "reference.cmalign.fasta"), 
-                    rfam = RFAMS, output_fold = "{output_fold}"),
-        tree_stats = expand(os.path.join("{output_fold}", "cmalign_{rfam}", \
-                            "reference.cmalign_phyml_stats.txt"), rfam = RFAMS, output_fold = "{output_fold}"),
-        tree_file = expand(os.path.join("{output_fold}", "cmalign_{rfam}", \
-                           "reference.cmalign_phyml_tree.txt"), rfam = RFAMS, output_fold = "{output_fold}")
+        db = os.path.join("18S_db","SSU_eukaryote_rRNA.nos"),
+        query = os.path.join(input_dir, "clustered_contigs","18S",
+                            "clustered.centroids.fasta")
+        #query = os.path.join("../meta-lakes/2021-06-11_treebuilder/clustered_contigs/reference.RF00177.clustered.core.fasta")
+        #query = os.path.join("2021-11-07_treebuilder/clustered_contigs/reference.RF01960.clustered.core.fasta")
+        #RF01960.clustered.core.fasta")
+        #query = os.path.join("all_sequences.fasta")
     output:
-        refpkg = expand(os.path.join("{output_fold}", "taxtastic", "{rfam}.refpkg"),\
-                        rfam = RFAMS, output_fold = "{output_fold}")
-    conda:
-        "tree-env.yaml"
+        os.path.join(input_dir, "blast_out", "18S",
+                            "blast_formatted.out")
+    params:
+        db = os.path.join("18S_db","SSU_eukaryote_rRNA")
     shell:
         '''
-        module load parallel
-        parallel --link --jobs 2 "taxit create -l 18s_rRNA -P {{1}} " + \
-               "--aln-fasta {{2}} " + \
-               "--tree-stats {{3}} " + \
-               "--tree-file {{4}}" ::: {output.refpkg} ::: {input.cm_fast} ::: {input.tree_stats} ::: {input.tree_file}
+        blastn -db {params.db} -out {output} -query {input.query} -outfmt 6 -num_threads 8 -evalue 10e-4
         '''
+        
+rule select_best_hits:
+    input:
+        blast_in = os.path.join(input_dir, "blast_out", "{model}",
+                            "blast_formatted.out")
+    output:
+        blast_out = os.path.join(input_dir, "blast_top_1", "{model}",
+                            "blast_formatted_reduced.cols.out")
+    params:
+        model = "{model}"
+    run:
+        blast_file = pd.read_csv(input.blast_in, sep = "\t", header=None,
+                         names=["qseqid","sseqid","pident","length","mismatch",
+                                "gapopen","qstart","qend","sstart","send","evalue","bitscore"])
+        if params.model == "16S":
+            blast_file = blast_file[["bacteria" in curr for curr in blast_file.qseqid]]
+        else:
+            blast_file = blast_file[["eukary" in curr for curr in blast_file.qseqid]]
+        blast_file = blast_file.reset_index(drop=True)
+        blast_file["length"] = blast_file["length"].astype(float)
+        blast_file = blast_file.loc[blast_file["length"] > 100,:]
+        blast_file["pident"] = blast_file["pident"].astype(float)
+        blast_file = blast_file.loc[blast_file["pident"] >= 75,:]
+        reduced_file = blast_file.loc[blast_file.groupby("qseqid")["bitscore"].nlargest(1).reset_index(level="qseqid").index,:]
+        #reduced_file = blast_file.groupby("qseqid")['bitscore'].nlargest(1).reset_index()
+        
+        reduced_file.to_csv(output.blast_out, sep="\t")
+        
+rule select_best_model:
+    input:
+        blast_16 = os.path.join(input_dir, "blast_out", "16S",
+                            "blast_formatted.out"),
+        blast_18 = os.path.join(input_dir, "blast_out", "18S",
+                            "blast_formatted.out")
+    output:
+        blast_out_16 = os.path.join(input_dir, "selected_fasta", "16S",
+                            "16S_seq_list.txt"),
+        blast_out_18 = os.path.join(input_dir, "selected_fasta", "18S",
+                            "18S_seq_list.txt"),
+        fasta_16 = os.path.join(input_dir, "selected_fasta", "16S", "selected_seqs.fasta"),
+        fasta_18 = os.path.join(input_dir, "selected_fasta", "18S", "selected_seqs.fasta")
+    run:
+        blast_16 = pd.read_csv(input.blast_16, sep = "\t", header=None,
+                         names=["qseqid","sseqid","pident","length","mismatch",
+                                "gapopen","qstart","qend","sstart","send","evalue","bitscore"])
+        blast_16["length"] = blast_16["length"].astype(float)
+        blast_16 = blast_16.loc[blast_16["length"] > 100,:]
+        blast_18 = pd.read_csv(input.blast_18, sep = "\t", header=None,
+                         names=["qseqid","sseqid","pident","length","mismatch",
+                                "gapopen","qstart","qend","sstart","send","evalue","bitscore"])
+        blast_18["length"] = blast_18["length"].astype(float)
+        blast_18 = blast_18.loc[blast_18["length"] > 100,:]
+        blast_16 = blast_16[["bacteria" in curr for curr in blast_16.qseqid]]
+        blast_18 = blast_18[["eukary" in curr for curr in blast_18.qseqid]]
+        
+        blast_16 = blast_16.reset_index(drop=True)
+        blast_16 = blast_16.loc[blast_16.groupby("qseqid")["bitscore"].nlargest(1).reset_index(level="qseqid").index,:]
+        blast_18 = blast_18.reset_index(drop=True)
+        blast_18 = blast_18.loc[blast_18.groupby("qseqid")["bitscore"].nlargest(1).reset_index(level="qseqid").index,:]
+        
+        blast_16.columns = [curr + "_16" for curr in blast_16.columns]
+        blast_18.columns = [curr + "_18" for curr in blast_18.columns]
+        
+        blast_16["SeqID"] = [curr.split("SSU_")[0] for curr in blast_16.qseqid_16]
+        blast_18["SeqID"] = [curr.split("SSU_")[0] for curr in blast_18.qseqid_18]
+       
+        merged_blast = pd.merge(blast_16,blast_18, how = "outer").fillna(0)
+        
+        good_16_inds = [ind for curr16,curr18,ind in zip(merged_blast.bitscore_16,merged_blast.bitscore_18,merged_blast.index) if (curr16 > 0) and ((curr18 / curr16) < 0.50)]
+        good_18_inds = [ind for curr16,curr18,ind in zip(merged_blast.bitscore_16,merged_blast.bitscore_18,merged_blast.index) if (curr18 > 0) and ((curr16 / curr18) < 0.50)]
+        
+        merged_blast_16 = merged_blast.loc[good_16_inds,:]
+        merged_blast_18 = merged_blast.loc[good_18_inds,:]
+        list_16_ids = list(merged_blast_16.qseqid_16)
+        list_18_ids = list(merged_blast_18.qseqid_18)
+        
+        with open(output.blast_out_16, "w") as f:
+            f.writelines(list_16_ids)
+        with open(output.blast_out_18, "w") as f:
+            f.writelines(list_18_ids)
+        
+        #with open("all_sequences.fasta") as input_file:
+        #    iterator_1 = SeqIO.parse(input_file, "fasta")
+        records_16 = [r for r in SeqIO.parse("all_sequences.fasta", "fasta") if r.id in list(list_16_ids)]
+        records_18 = [r for r in SeqIO.parse("all_sequences.fasta", "fasta") if r.id in list(list_18_ids)]
+        #with open("all_sequences.fasta") as input_again:
+        #    iterator_2 = SeqIO.parse(input_again, "fasta")
+        #    records_18 = [r for r in iterator_2 if r.id in list(list_18_ids)]
+            
+        ## WRITE 16S FASTA FILE ##
+        with open(output.fasta_16, "w") as output_handle:
+            SeqIO.write(records_16, output_handle, "fasta")
+            
+        ## WRITE 18S FASTA FILE ##
+        with open(output.fasta_18, "w") as output_handle:
+            SeqIO.write(records_18, output_handle, "fasta")
+            
+rule readout_tax_ids:
+    input:
+        blast_out = os.path.join(input_dir, "blast_top_1", "{model}",
+                                "blast_formatted_reduced.cols.out")
+    output:
+        ncbi_ref_seq_id = expand(os.path.join(input_dir, "blast_top_1", "split_files", "{model}_{curr}_refseqs.txt"), model = "{model}", curr = list(range(0,40)))
+    run:
+        blast_file = pd.read_csv(input.blast_out, sep = "\t", header=None,
+                                 names=["qseqid","sseqid","pident","length","mismatch",
+                                        "gapopen","qstart","qend","sstart","send","evalue","bitscore"])
+        blast_file = blast_file.drop_duplicates(subset="sseqid")
+        ctr1=0
+        ctr2=int(len(blast_file.index)/len(output.ncbi_ref_seq_id))
+        for curr_file in output.ncbi_ref_seq_id:
+            with open(curr_file, "w") as f:
+                f.write(",".join([curr.split(".")[0] for curr in list(blast_file.sseqid)[ctr1:ctr2]]))
+            ctr1=ctr2
+            ctr2=ctr1+int(len(blast_file.index)/len(output.ncbi_ref_seq_id))
+            if ctr2 > len(blast_file.index):
+                ctr2 = len(blast_file.index)
+            
+rule get_refseq_taxid:
+    input:
+        ncbi_ref_seq_id = expand(os.path.join(input_dir, "blast_top_1", "split_files", "{model}_{curr}_refseqs.txt"), model = "{model}", curr = list(range(0,40)))
+    output:
+        ncbi_output = os.path.join(input_dir, "taxonomy_blast_hits", "{model}_tax.out")
+    shell:
+        '''
+        echo "" > {output.ncbi_output}
+        export NCBI_API_KEY=697b834f619e7a862c92cf01f382b4a45308
+        for ncbi_ref_file in {input.ncbi_ref_seq_id}; do
+            ncbi_refids=$(cat $ncbi_ref_file | tr "," "\n")
+            for ncbi_refid in $ncbi_refids; do
+                if [[ $ncbi_refid != "sseqid" ]]; then
+                    taxid=$(efetch -db nucleotide -id $ncbi_refid -format docsum | xtract -pattern DocumentSummary -element TaxId) || true
+                    lineage=$(efetch -db taxonomy -id $taxid -format xml | xtract -pattern TaxaSet -element Lineage) || true
+                    echo "$ncbi_refid, $taxid, $lineage" >> {output.ncbi_output}
+                 fi
+            done
+        done
+        '''
+#taxids=$(efetch -db nucleotide -id $ncbi_refids -format docsum | xtract -pattern DocumentSummary -element TaxId | efetch -db taxonomy -id) 
+#efetch -db taxonomy -id $taxids -format xml | xtract -pattern TaxaSet -element Lineage
+#resulting_table=$(efetch -db nucleotide -id $ncbi_refids -format xml | xtract -pattern Seq-entry -block Bioseq -element Textseq-id_accession,BinomialOrgName_genus,RNA-ref_ext_name,User-field_data_strs_E,OrgName_lineage)
+#echo $resulting_table >> {output.ncbi_output}
+#resulting_table = pd.read_csv(input.ncbi_output, sep = "\t", header=None,
+#                                 names=["NR_accession","Genus","RNAtype","ProjectNumber","Lineage"])
+
+rule combine_hits:
+    input:
+        ncbi_output = os.path.join(input_dir, "taxonomy_blast_hits", "{model}_tax.out"),
+        blast_out = os.path.join(input_dir, "blast_top_1", "{model}",
+                                "blast_formatted_reduced.cols.out")
+    output:
+        blast_w_tax = os.path.join(input_dir, "blast_w_tax", "{model}",
+                                "blast_formatted_reduced.cols.out")
+    run:
+        blast_file = pd.read_csv(input.blast_out, sep = "\t")
+        blast_file["sseqid"] = [str(curr.split(".")[0]) for curr in blast_file["sseqid"]]
+        resulting_table = pd.read_csv(input.ncbi_output, sep = ",", header=None,
+                                 names=["NR_accession","TaxID","Lineage"])
+        resulting_table["NR_accession"] = [str(curr) for curr in resulting_table["NR_accession"]]
+        merged_table = pd.merge(blast_file,resulting_table,how="left",left_on="sseqid",right_on="NR_accession")
+        merged_table.to_csv(output.blast_w_tax, sep="\t")
