@@ -1,0 +1,17 @@
+name: tree_software
+channels:
+    - bioconda
+    - conda-forge
+    - anaconda
+dependencies:
+    - infernal
+    - mafft
+    - seqmagick
+    - pplacer
+    - phyml
+    - pip
+    - iqtree
+    - vsearch
+    - biopython
+    - pip:
+        - taxtastic
