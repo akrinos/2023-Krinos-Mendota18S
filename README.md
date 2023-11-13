@@ -1,6 +1,6 @@
-# 2022 paper for submission to ISME-j : eukaryotes in Lake Mendota
+# 2023 paper for submission to _Microbiome_ : eukaryotes in Lake Mendota
 
-Code and associated figures for 2022 paper on Mendota 18S sequences.
+Code and associated figures for 2023 paper on Mendota 18S sequences.
 
 ## Directory: `code`
 
